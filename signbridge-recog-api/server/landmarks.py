@@ -30,8 +30,13 @@ TASK_PATH = Path(os.environ.get("HOLISTIC_TASK", ASSET_DIR / "holistic_landmarke
 
 # 긴 영상은 여기서 자른다 — 심사위원이 올릴 클립은 수십 초, 서버 CPU는 2코어다.
 MAX_SECONDS_DEFAULT = float(os.environ.get("MAX_SECONDS", "30"))
-# 원본이 60fps처럼 높으면 30fps 근처로 내려 받는다(브라우저 실효 fps 15~25와 비슷하게).
-TARGET_FPS = float(os.environ.get("TARGET_FPS", "30"))
+# 실효 fps 목표. 30fps 원본은 2프레임에 1개(15fps), 60fps는 4개에 1개로 솎는다.
+# 실측(AI Hub 17클립): 30→15fps에서 낱말 top-1 0.80→0.82, 연속 vote F1 0.648→0.638, 10fps에서도 0.628 —
+# 모델은 32프레임으로 다시 샘플링하므로 fps에 둔감하다. MediaPipe 시간은 절반이 된다(2 vCPU 무료 Space 대비).
+TARGET_FPS = float(os.environ.get("TARGET_FPS", "15"))
+# 긴 변이 이보다 크면 줄인다. MediaPipe는 내부에서 256px 안팎으로 다시 줄이므로 정확도 손실은 없고,
+# 1080p/4K 폰 영상의 색 변환·복사 비용만 아낀다.
+MAX_SIDE = int(os.environ.get("MAX_SIDE", "960"))
 
 
 @dataclass
@@ -226,6 +231,10 @@ def decode_video(path: str | Path, max_seconds: float | None = None) -> tuple[li
         if max_src_frames and index >= max_src_frames:
             break
         if index % every == 0:
+            h, w = bgr.shape[:2]
+            if MAX_SIDE > 0 and max(h, w) > MAX_SIDE:
+                sc = MAX_SIDE / max(h, w)
+                bgr = cv2.resize(bgr, (int(round(w * sc)), int(round(h * sc))), interpolation=cv2.INTER_AREA)
             frames.append(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
             stamps.append(int(round(index * 1000.0 / src_fps)))
         index += 1

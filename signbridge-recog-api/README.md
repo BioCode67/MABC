@@ -109,9 +109,9 @@ AI Hub 재난 수어 클립 17개(191 낱말 구간)로 잰 값입니다.
 |---|---|
 | 기동 후 RSS | ≈ 390 MB (ONNX + MediaPipe 랜드마커 적재) |
 | 요청 처리 중 정상 상태 RSS | ≈ 530 MB (랜드마커 1개 재사용, 추론 배치 32) — 요청을 거듭해도 늘지 않음 |
-| MediaPipe 랜드마크 | ≈ 15 ms/프레임 (60프레임 0.9 s). 무료 Space 2 vCPU에서는 두 배쯤 잡을 것 |
+| MediaPipe 랜드마크 | 사람이 있는 프레임 ≈ 50 ms (640×480), 1080p 원본은 긴 변 960으로 줄여 같은 속도(`MAX_SIDE`). 30fps 영상은 15fps로 솎는다(`TARGET_FPS`, 정확도 손실 F1 −0.01). 무료 Space 2 vCPU에서 10초 클립 ≈ 10~15초 |
 | 인식(투표 디코더 + 거울 판정) | 23 s 클립 ≈ 2~4 s |
-| 지원 컨테이너 | mp4(H.264) · webm(VP8/VP9) · mov · 60fps는 30fps로 솎음 — OpenCV 내장 FFmpeg, 시스템 ffmpeg 불필요 |
+| 지원 컨테이너 | mp4(H.264) · webm(VP8/VP9) · mov — OpenCV 내장 FFmpeg, 시스템 ffmpeg 불필요 |
 
 무료 Space(16 GB)는 넉넉합니다. **512 MB짜리 무료 PaaS(Render 무료 등)에는 맞지 않습니다** — MediaPipe만으로 넘칩니다.
 
@@ -127,6 +127,9 @@ AI Hub 재난 수어 클립 17개(191 낱말 구간)로 잰 값입니다.
 
 1. **+ New Space** → SDK **Docker** → Hardware **CPU basic (free)** → Public
 2. 이 폴더를 통째로 올린다 (`assets/`의 40MB 세 파일 포함 — 한도 안)
+   - 웹 UI "Files → Upload"로 올리면 큰 파일은 자동으로 LFS 처리된다
+   - `git push`로 올리면 **10MB 넘는 파일은 LFS 필수**: `git lfs install && git lfs track "*.onnx" "*.task"` 한 뒤 add·commit
+   - 자산을 안 올리고 `MODEL_ONNX_URL`·`MODEL_META_URL`·`HOLISTIC_TASK_URL` 변수(Settings → Variables)로 받게 할 수도 있다
 3. 첫 빌드 3~5분. `GET /health`가 `{"ok": true, ...}`면 끝
 
 ### 절전 대비 (심사 실격 방지)

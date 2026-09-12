@@ -1,7 +1,7 @@
 # SignBridge 수어 인식 API — Hugging Face Spaces (Docker SDK)
 #
 # HF Spaces 규칙: 7860 포트 · uid 1000(user) · 쓰기 가능한 곳은 /home/user와 /tmp뿐.
-# 무료 CPU basic(2 vCPU · 16GB)에서 충분히 돈다 — 모델 26MB, 추론 2~7ms, MediaPipe ~30ms/프레임.
+# 무료 CPU basic(2 vCPU · 16GB)에서 돈다 — 모델 26MB, 추론 2~7ms, MediaPipe ≈50ms/프레임(4코어 실측, 2 vCPU면 그 두 배쯤).
 FROM python:3.11-slim
 
 # opencv-headless·mediapipe가 요구하는 최소 시스템 라이브러리.
@@ -16,7 +16,8 @@ ENV HOME=/home/user \
     PYTHONUNBUFFERED=1 \
     ASSET_DIR=/home/user/app/assets \
     MAX_SECONDS=30 \
-    TARGET_FPS=30
+    TARGET_FPS=15 \
+    MAX_SIDE=960
 
 WORKDIR /home/user/app
 

@@ -208,12 +208,13 @@ else:
     hands = sum((f.left is not None) or (f.right is not None) for f in vl.frames)
     missing = sum((f.left is None) or (f.right is None) for f in vl.frames)
     check(vl.backend == "mediapipe-tasks", f"백엔드 {vl.backend}")
-    check(pose >= 40, f"포즈 검출 {pose}/{len(vl.frames)} 프레임 ({dt:.1f}s)")
-    check(hands >= 20, f"손 검출 {hands} 프레임")
+    n = len(vl.frames)
+    check(n >= 20 and pose >= 0.8 * n, f"포즈 검출 {pose}/{n} 프레임 ({dt:.1f}s, 실효 {vl.fps:.1f}fps)")
+    check(hands >= 0.4 * n, f"손 검출 {hands} 프레임")
     check(missing >= 1, f"한쪽 손이 빈 프레임 {missing}개 — 빈 패킷 경로를 지나고도 살아 있음")
     r = rec.recognize(vl.frames, vl.fps)
     check(r["status"] in ("ok", "no_hands"), f"recognize status={r['status']} hand_ratio={r['hand_ratio']}")
-    check(len(vl2.frames) == len(vl.frames) and sum(f.pose is not None for f in vl2.frames) >= 40, "두 번째 요청도 정상(랜드마커 재사용)")
+    check(len(vl2.frames) == n and sum(f.pose is not None for f in vl2.frames) >= 0.8 * n, "두 번째 요청도 정상(랜드마커 재사용)")
 
 print()
 if FAILS:
