@@ -1,12 +1,17 @@
-# SignBridge 수어 인식 API — 배포·로컬 공용.
+# SignBridge 수어 인식 API — 배포·로컬 공용. 검증한 조합을 **정확히** 고정한다(심사 직전 새 릴리스로 빌드가 깨지지 않게).
 #
-# 검증 환경: Python 3.11 · 이 조합으로 ONNX 로드·MediaPipe Tasks(.task) 로드·mp4 디코드 전부 확인.
-# mediapipe 1.x는 API가 바뀌었을 수 있어 브라우저(@mediapipe/tasks-vision 0.10.x)와 같은 0.10 계열로 고정.
-# numpy 2는 mediapipe 0.10.21과 충돌 → <2.
-numpy<2
+# 검증 환경: Python 3.11 · 이 조합으로 ONNX 로드·MediaPipe Tasks(.task)·mp4/webm/mov 디코드·전체 테스트(tests/test_e2e.py) 통과.
+# mediapipe 1.x는 API가 다를 수 있어 브라우저(@mediapipe/tasks-vision 0.10.x)와 같은 0.10 계열로 고정.
+# numpy 2·protobuf 5는 mediapipe 0.10.21과 충돌 → 아래 버전.
+# mediapipe가 opencv-contrib-python을 끌어오므로(libGL 필요 — Dockerfile이 libgl1 설치) 그 버전도 함께 고정한다.
+numpy==1.26.4
+protobuf==4.25.9
 onnxruntime==1.20.1
 mediapipe==0.10.21
-opencv-python-headless<4.11
-fastapi
-uvicorn[standard]
-python-multipart
+opencv-contrib-python==4.11.0.86
+opencv-python-headless==4.10.0.84
+fastapi==0.141.1
+starlette==1.6.0
+pydantic==2.13.5
+uvicorn[standard]==0.52.4
+python-multipart==0.0.32

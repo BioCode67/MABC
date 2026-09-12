@@ -174,7 +174,11 @@ python -m venv .venv && . .venv/bin/activate
 pip install -r requirements.txt
 uvicorn server.app:app --port 7860
 python tests/test_e2e.py          # signbridge 저장소가 옆에 있으면 실데이터로 정확도까지 검증
+pip install onnx                  # (선택) [7] CTC 배관 검사는 합성 ONNX를 만들어야 해서 onnx 패키지가 필요
 ```
+
+`requirements.txt`는 검증한 버전으로 **정확히 고정**되어 있습니다. 새 가상환경에서 설치 → 전체 테스트 통과까지 확인한 조합이니
+심사 직전에 버전을 올리지 마세요.
 
 ## Hermes Agent / 다른 에이전트에 붙이기
 
