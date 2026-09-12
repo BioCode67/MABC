@@ -70,6 +70,10 @@ MIRROR_STEP_DIV = 2
 MIRROR_MARGIN = 0.08  # 반전 점수가 원본 점수보다 이만큼 높아야 반전 채택(클립 마진 최소 +0.098, 낱말 하나짜리 입력 손실 ≈0.01)
 
 
+class CtcUnavailable(RuntimeError):
+    """mode=ctc를 요청했지만 CTC 모델 파일이 없다."""
+
+
 @dataclass
 class Word:
     gloss: str
@@ -350,11 +354,32 @@ class Recognizer:
         return words
 
     # ── 한 번에 ────────────────────────────────────────────────────────────
+    def _model_info(self, mode: str) -> dict:
+        if mode == "ctc":
+            from .ctc import get_ctc
+
+            ctc = get_ctc()
+            if ctc is not None:
+                return ctc.info()
+        return {
+            "name": "signbridge iso-v2",
+            "num_classes": self.meta.get("num_classes"),
+            "val_top1_signer_disjoint": self.meta.get("val_top1"),
+            "trained_epoch": self.meta.get("trained_epoch"),
+        }
+
     def decode(self, feats: np.ndarray, fps: float, mode: str, topk: int) -> list[Word]:
         if mode == "stream":
             return self.stream_decode(feats, fps, topk)
         if mode == "dp":
             return self.segmental_decode(feats, fps, topk)
+        if mode == "ctc":
+            from .ctc import get_ctc
+
+            ctc = get_ctc()
+            if ctc is None:
+                raise CtcUnavailable("연속 인식(ctc) 모델이 배포되지 않았습니다")
+            return ctc.decode(feats, fps, topk)
         return self.vote_decode(feats, fps, topk)  # "segmental"
 
     def recognize(self, frames: list[LandmarkFrame], fps: float, mode: str = "segmental", topk: int = 5, mirror: str = "auto") -> dict:
@@ -388,12 +413,7 @@ class Recognizer:
             "hand_ratio": round(ratio, 3),
             "fps": round(float(fps), 2),
             "timing_ms": {"recognize": round((time.perf_counter() - t0) * 1000, 1)},
-            "model": {
-                "name": "signbridge iso-v2",
-                "num_classes": self.meta.get("num_classes"),
-                "val_top1_signer_disjoint": self.meta.get("val_top1"),
-                "trained_epoch": self.meta.get("trained_epoch"),
-            },
+            "model": self._model_info(mode),
         }
 
 

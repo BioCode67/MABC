@@ -4,3 +4,5 @@ assets/holistic_landmarker.task
 __pycache__/
 *.pyc
 .venv/
+# 연속 인식(CTC) 모델 — get_assets.sh가 채운다
+assets/ctc/

@@ -12,6 +12,7 @@
   4. /recognize/landmarks 입력 형식 왕복(JSON 프레임 → 인식)
   5. 손 없음/포즈 없음 가드
   6. 실제 사람 사진으로 만든 영상 → MediaPipe 검출(래퍼 빈 패킷 크래시 회귀) → 인식
+  7. CTC 자리: 축약 규칙 · 합성 ONNX(동적 시간축·stride·zero_depth) · mode=ctc 왕복 · 모델 없을 때 409용 예외
 """
 
 from __future__ import annotations
@@ -29,7 +30,7 @@ sys.path.insert(0, str(ROOT))
 from server.korean import glosses_to_korean, gloss_label, polite  # noqa: E402
 from server.features import mirror_features  # noqa: E402
 from server.landmarks import LandmarkFrame, frames_from_json  # noqa: E402
-from server.recognizer import MIN_FRAMES, PROB_BATCH, Recognizer  # noqa: E402
+from server.recognizer import MIN_FRAMES, PROB_BATCH, CtcUnavailable, Recognizer  # noqa: E402
 
 FAILS: list[str] = []
 
@@ -215,6 +216,85 @@ else:
     r = rec.recognize(vl.frames, vl.fps)
     check(r["status"] in ("ok", "no_hands"), f"recognize status={r['status']} hand_ratio={r['hand_ratio']}")
     check(len(vl2.frames) == n and sum(f.pose is not None for f in vl2.frames) >= 0.8 * n, "두 번째 요청도 정상(랜드마커 재사용)")
+
+print("[7] CTC 연속 인식 자리 (합성 모델로 배관 검증)")
+import os  # noqa: E402
+import tempfile  # noqa: E402
+
+from server import ctc as ctc_mod  # noqa: E402
+from server.ctc import greedy_decode  # noqa: E402
+
+# 축약 규칙: 직전 프레임과 비교, blank는 버리되 previous 갱신 (ml/signbridge/metrics.py와 동일)
+def _lg(seq, C=4):
+    a = np.full((len(seq), C), -5.0, np.float32)
+    for t, c in enumerate(seq):
+        a[t, c] = 5.0
+    return a
+check([t[0] for t in greedy_decode(_lg([1, 1, 0, 1, 2, 2, 0, 0, 2]), 0)] == [1, 1, 2, 2], "CTC 축약: 반복 합침 · blank 사이 같은 낱말은 둘")
+check([t[0] for t in greedy_decode(_lg([0, 0, 0]), 0)] == [], "CTC 축약: 전부 blank → 빈 열")
+check(greedy_decode(_lg([3, 3]), 0)[0][1] == 0 and 0.99 < greedy_decode(_lg([3, 3]), 0)[0][2] <= 1.0, "CTC 토큰 프레임·확신")
+
+try:
+    import onnx
+    from onnx import TensorProto, helper, numpy_helper
+except ImportError:
+    onnx = None
+if onnx is None:
+    print("  - 건너뜀: onnx 패키지 없음 (pip install onnx)")
+else:
+    rng = np.random.default_rng(0)
+    C, H, K, STRIDE = 6, 16, 3, 2
+    W1 = numpy_helper.from_array(rng.normal(0, 0.05, (H, 155, K)).astype(np.float32), "W1")
+    B1 = numpy_helper.from_array(np.zeros(H, np.float32), "B1")
+    W2 = numpy_helper.from_array(rng.normal(0, 0.5, (H, C)).astype(np.float32), "W2")
+    B2 = numpy_helper.from_array(np.array([2.0, 0, 0, 0, 0, 0], np.float32), "B2")  # blank가 자주 이기게
+    nodes = [
+        helper.make_node("Transpose", ["input"], ["x_t"], perm=[0, 2, 1]),
+        helper.make_node("Conv", ["x_t", "W1", "B1"], ["c"], kernel_shape=[K], strides=[STRIDE], pads=[1, 1]),
+        helper.make_node("Relu", ["c"], ["r"]),
+        helper.make_node("Transpose", ["r"], ["r_t"], perm=[0, 2, 1]),
+        helper.make_node("MatMul", ["r_t", "W2"], ["m"]),
+        helper.make_node("Add", ["m", "B2"], ["output"]),
+    ]
+    graph = helper.make_graph(nodes, "fake_ctc", [helper.make_tensor_value_info("input", TensorProto.FLOAT, ["batch", "frames", 155])],
+                              [helper.make_tensor_value_info("output", TensorProto.FLOAT, ["batch", "frames_out", C])], initializer=[W1, B1, W2, B2])
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 17)])
+    model.ir_version = 9
+    with tempfile.TemporaryDirectory() as td:
+        mp_, me_ = Path(td) / "model.onnx", Path(td) / "meta.json"
+        onnx.save(model, str(mp_))
+        me_.write_text(json.dumps({"task": "ctc", "feature_dim": 155, "seq_len": 32, "zero_depth": True, "num_classes": C,
+                                   "labels": ["<blank>", "병원1", "가다1", "약1", "먹다1", "머리1"], "blank_id": 0, "conv_stride": STRIDE,
+                                   "trained_epoch": 1, "val_wer": 0.99}), encoding="utf-8")
+        ctc_mod.reset_for_tests()
+        check(ctc_mod.get_ctc() is None, "모델 파일 없으면 get_ctc() → None (기본 경로)")
+        crec = ctc_mod.CtcRecognizer(mp_, me_)
+        T = 97
+        lg = crec.logits(np.random.rand(T, 155).astype(np.float32))
+        check(lg.shape == ((T + 1) // STRIDE, C), f"동적 시간축 {T} → {lg.shape} (stride {STRIDE})")
+        feats_r = np.random.rand(120, 155).astype(np.float32) * 2 - 1
+        words_c = crec.decode(feats_r, 30.0, topk=3)
+        check(all(w.end > w.start for w in words_c) and all(len(w.alts) == 3 and all(a["gloss"] != "<blank>" for a in w.alts) for w in words_c),
+              f"ctc decode → {len(words_c)}개 낱말, 구간 단조·후보에 blank 없음")
+        # zero_depth: z 채널을 0으로 넣는지 — z만 다른 두 입력의 로짓이 같아야 한다
+        f2 = feats_r.copy(); f2[:, 2:153:3] += 3.0
+        check(np.allclose(crec.logits(feats_r), crec.logits(f2), atol=1e-5), "meta.zero_depth=true → z 채널 무시")
+        # recognize(mode='ctc') 왕복: 환경변수로 합성 모델을 가리킨다
+        ctc_mod.CTC_ONNX, ctc_mod.CTC_META = mp_, me_
+        ctc_mod.reset_for_tests()
+        check(ctc_mod.get_ctc() is not None, "파일 있으면 get_ctc() 적재")
+        pose7 = np.random.rand(33, 3).astype(np.float32)
+        pose7[11] = [0.4, 0.5, 0]; pose7[12] = [0.6, 0.5, 0]
+        frames7 = [LandmarkFrame(pose=pose7, left=np.random.rand(21, 3).astype(np.float32), right=None, t_ms=i * 33) for i in range(90)]
+        r7 = rec.recognize(frames7, 30.0, mode="ctc", topk=3)
+        check(r7["status"] == "ok" and r7["mode"] == "ctc" and r7["model"]["name"] == "signbridge ctc-v1", f"recognize(mode=ctc) status={r7['status']} words={len(r7['words'])}")
+        ctc_mod.reset_for_tests()
+        ctc_mod.CTC_ONNX, ctc_mod.CTC_META = Path(td) / "none.onnx", Path(td) / "none.json"
+        try:
+            rec.recognize(frames7, 30.0, mode="ctc")
+            check(False, "모델 없을 때 mode=ctc → 예외가 나야 한다")
+        except CtcUnavailable:
+            check(True, "모델 없을 때 mode=ctc → CtcUnavailable")
 
 print()
 if FAILS:

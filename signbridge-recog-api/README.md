@@ -114,7 +114,17 @@ AI Hub 재난 수어 클립 17개(191 낱말 구간)로 잰 값입니다.
 | `mirror=auto` 판정 | 17클립 원본은 전부 원본으로, 반전본은 전부 반전으로 판정(점수 차 +0.10~+0.44) |
 
 즉 **낱말 단위 인식은 검증 수치대로 나오고, 연속 수어를 낱말로 쪼개는 것이 병목**입니다. 그것은 CTC 연속 인식 모델(`ctc-v1`,
-검증 WER 0.22 — signbridge 저장소에 학습 완료)의 일이며, 이 서버는 그 모델이 오면 `mode=ctc`로 붙일 자리를 비워 두었습니다.
+검증 WER 0.22 — signbridge 저장소에 학습 완료)의 일이며, 이 서버는 그 모델을 **`mode=ctc`로 바로 붙일 수 있게** 해 두었습니다.
+
+### `mode=ctc` — 연속 인식 모델 붙이기
+
+1. signbridge에서 `bash ml/jobs/deploy_ctc.sh ~/sbruns/ctc-v1` → `public/models/ksl-ctc/{model.onnx,meta.json}`
+2. 그 두 파일을 이 폴더의 `assets/ctc/`에 둔다 (`get_assets.sh <signbridge>`가 있으면 자동으로 복사)
+3. 재기동 → `GET /health`의 `ctc_loaded: true`, `mode=ctc`로 호출
+
+규격은 `ml/export_onnx.py`가 내보내는 그대로입니다(`input [1,T,155]` → `output [1,T',C]`, `meta.json`의 `blank_id`·`conv_stride`·`zero_depth`).
+디코딩은 `ml/signbridge/metrics.py`·브라우저 `ctcRecognizer.ts`와 같은 그리디 축약입니다. 모델이 없으면 `mode=ctc`는 409를 돌려주고
+나머지는 그대로 돕니다. 배관은 합성 ONNX로 검증했습니다(`tests/test_e2e.py` [7]) — **실제 모델을 넣은 뒤 17클립으로 F1을 꼭 다시 재세요.**
 
 투표 디코더 수치는 같은 17클립으로 72개 설정을 훑어 고른 값이라 **낙관적**입니다(다만 thr 0.3~0.4·최소 길이 0.2~0.4s·후보 3~5개
 어느 조합이든 0.64±0.01로 평탄했고, thr 0.5부터 급락). 실제 촬영본에서는 더 낮게 봐야 합니다.

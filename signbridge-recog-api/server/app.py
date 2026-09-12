@@ -22,9 +22,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
+from .ctc import get_ctc
 from .korean import gloss_label, glosses_to_korean
 from .landmarks import MAX_SECONDS_DEFAULT, TASK_PATH, extract_video, frames_from_json, get_backend
-from .recognizer import META_PATH, MODEL_PATH, get_recognizer
+from .recognizer import META_PATH, MODEL_PATH, CtcUnavailable, get_recognizer
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -45,6 +46,7 @@ def _warm():
     try:
         get_recognizer()
         get_backend()
+        get_ctc()
         print("[app] 모델·검출기 적재 완료")
     except Exception as error:  # noqa: BLE001
         print(f"[app] 기동 시 적재 실패: {type(error).__name__}: {error}")
@@ -71,6 +73,10 @@ def health():
     except Exception as error:  # noqa: BLE001
         info["landmark_backend"] = f"unavailable: {type(error).__name__}"
         info["ok"] = False
+    ctc = get_ctc()
+    info["ctc_loaded"] = ctc is not None
+    if ctc is not None:
+        info["ctc"] = ctc.info()
     info["max_seconds"] = MAX_SECONDS_DEFAULT
     return info
 
@@ -86,8 +92,10 @@ def labels(q: str = "", limit: int = 50):
 
 def _validate_mode(mode: str) -> str:
     mode = (mode or "segmental").lower()
-    if mode not in ("segmental", "dp", "stream"):
-        raise HTTPException(400, "mode는 'segmental'(이어서 수어한 영상, 투표 디코더) · 'dp'(세그먼트 DP) · 'stream'(한 낱말씩)")
+    if mode not in ("segmental", "dp", "stream", "ctc"):
+        raise HTTPException(400, "mode는 'segmental'(이어서 수어한 영상, 투표 디코더) · 'dp'(세그먼트 DP) · 'stream'(한 낱말씩) · 'ctc'(연속 인식 모델, 배포된 경우)")
+    if mode == "ctc" and get_ctc() is None:
+        raise HTTPException(409, "연속 인식(ctc) 모델이 이 서버에 배포되지 않았습니다 — mode=segmental을 쓰세요")
     return mode
 
 
@@ -129,7 +137,10 @@ async def recognize_video(
         except ValueError as error:
             raise HTTPException(422, str(error)) from error
         t1 = time.perf_counter()
-        result = get_recognizer().recognize(vl.frames, vl.fps, mode=mode, topk=topk, mirror=mirror)
+        try:
+            result = get_recognizer().recognize(vl.frames, vl.fps, mode=mode, topk=topk, mirror=mirror)
+        except CtcUnavailable as error:
+            raise HTTPException(409, str(error)) from error
         result["video"] = {
             "filename": file.filename,
             "bytes": len(data),
@@ -166,7 +177,10 @@ def recognize_landmarks(req: LandmarksRequest):
     if len(req.frames) > 20000:
         raise HTTPException(413, "프레임이 너무 많습니다 (최대 20,000)")
     frames = frames_from_json(req.frames)
-    return get_recognizer().recognize(frames, req.fps, mode=mode, topk=max(1, min(req.topk, 10)), mirror=mirror)
+    try:
+        return get_recognizer().recognize(frames, req.fps, mode=mode, topk=max(1, min(req.topk, 10)), mirror=mirror)
+    except CtcUnavailable as error:
+        raise HTTPException(409, str(error)) from error
 
 
 class SentenceRequest(BaseModel):
