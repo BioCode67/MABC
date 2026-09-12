@@ -58,7 +58,13 @@ def _to_array(landmarks, n: int) -> np.ndarray | None:
 
 
 class _TasksHolistic:
-    """MediaPipe Tasks HolisticLandmarker — 브라우저와 동일 모델."""
+    """MediaPipe Tasks HolisticLandmarker — 브라우저와 동일 모델.
+
+    인스턴스는 **프로세스당 하나**를 재사용한다. 요청마다 새로 만들면 `close()`를 불러도
+    메모리가 돌아오지 않는다(실측 60프레임 요청 12회: 340→866MB, 계속 증가 / 재사용: 359MB 고정,
+    속도도 25% 빠름). VIDEO 모드는 타임스탬프가 단조 증가해야 하므로 요청마다 오프셋을 더하고,
+    요청 사이에 검은 프레임 하나를 넣어 추적 상태(이전 영상의 관심영역)를 끊는다.
+    """
 
     name = "mediapipe-tasks"
 
@@ -68,32 +74,50 @@ class _TasksHolistic:
         from mediapipe.tasks.python import vision
 
         self._mp = mp
-        self._vision = vision
         opts = vision.HolisticLandmarkerOptions(
             base_options=mpp.BaseOptions(model_asset_path=str(task_path)),
             running_mode=vision.RunningMode.VIDEO,
         )
         self._make = lambda: vision.HolisticLandmarker.create_from_options(opts)
+        self._lm = self._make()
+        self._lock = threading.Lock()
+        self._next_ts = 0
+        self._blank = np.zeros((64, 64, 3), dtype=np.uint8)
+
+    def _detect(self, rgb: np.ndarray, ts: int):
+        img = self._mp.Image(image_format=self._mp.ImageFormat.SRGB, data=rgb)
+        return self._lm.detect_for_video(img, int(ts))
 
     def run_video(self, frames_rgb, timestamps_ms) -> list[LandmarkFrame]:
-        # VIDEO 모드는 타임스탬프가 단조 증가해야 하고, 인스턴스가 상태를 가지므로
-        # 요청마다 새로 만든다(요청 간 추적 상태가 섞이지 않게).
-        lm = self._make()
         out: list[LandmarkFrame] = []
-        try:
-            for rgb, ts in zip(frames_rgb, timestamps_ms):
-                img = self._mp.Image(image_format=self._mp.ImageFormat.SRGB, data=rgb)
-                r = lm.detect_for_video(img, int(ts))
-                out.append(
-                    LandmarkFrame(
-                        pose=_to_array(r.pose_landmarks, NUM_POSE),
-                        left=_to_array(r.left_hand_landmarks, NUM_HAND),
-                        right=_to_array(r.right_hand_landmarks, NUM_HAND),
-                        t_ms=int(ts),
+        with self._lock:
+            base = self._next_ts
+            try:
+                # 구분용 검은 프레임 — 이전 요청의 추적 상태를 지운다(검출 없음 → 다음 프레임은 재검출).
+                self._detect(self._blank, base)
+                base += 40
+                last = 0
+                for rgb, ts in zip(frames_rgb, timestamps_ms):
+                    last = max(last, int(ts))
+                    r = self._detect(rgb, base + int(ts))
+                    out.append(
+                        LandmarkFrame(
+                            pose=_to_array(r.pose_landmarks, NUM_POSE),
+                            left=_to_array(r.left_hand_landmarks, NUM_HAND),
+                            right=_to_array(r.right_hand_landmarks, NUM_HAND),
+                            t_ms=int(ts),
+                        )
                     )
-                )
-        finally:
-            lm.close()
+                self._next_ts = base + last + 40
+            except Exception:
+                # 랜드마커가 깨진 채 남지 않게 새로 만든다(타임스탬프도 0부터).
+                try:
+                    self._lm.close()
+                except Exception:  # noqa: BLE001
+                    pass
+                self._lm = self._make()
+                self._next_ts = 0
+                raise
         return out
 
 

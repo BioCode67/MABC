@@ -2,18 +2,32 @@
   "openapi": "3.1.0",
   "info": {
     "title": "SignBridge Sign Recognition API",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "description": "한국수어 영상 또는 MediaPipe 랜드마크를 받아 글로스 열(낱말 ID), 낱말별 후보(top-k), 규칙 기반 폴백 문장을 돌려준다. LLM 없음. status가 'ok'가 아니면 인식 결과가 없는 것이며, 그때는 사용자에게 손과 상반신이 보이게 다시 촬영하도록 안내해야 한다. 최종 문장은 glosses·alts를 근거로 작성하되 없는 낱말을 지어내지 않는다."
   },
   "servers": [
-    { "url": "https://REPLACE-WITH-YOUR-SPACE.hf.space", "description": "Hugging Face Space (배포 후 주소로 교체)" }
+    {
+      "url": "https://REPLACE-WITH-YOUR-SPACE.hf.space",
+      "description": "Hugging Face Space (배포 후 주소로 교체)"
+    }
   ],
   "paths": {
     "/health": {
       "get": {
         "operationId": "health",
         "summary": "서버·모델 준비 상태 확인",
-        "responses": { "200": { "description": "ok가 true면 인식 가능", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Health" } } } } }
+        "responses": {
+          "200": {
+            "description": "ok가 true면 인식 가능",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Health"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/labels": {
@@ -21,39 +35,128 @@
         "operationId": "searchLabels",
         "summary": "인식 가능한 글로스(낱말) 검색",
         "parameters": [
-          { "name": "q", "in": "query", "schema": { "type": "string" }, "description": "부분 문자열(예: 병원)" },
-          { "name": "limit", "in": "query", "schema": { "type": "integer", "default": 50, "maximum": 500 } }
+          {
+            "name": "q",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "부분 문자열(예: 병원)"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 50,
+              "maximum": 500
+            }
+          }
         ],
-        "responses": { "200": { "description": "매칭 목록", "content": { "application/json": { "schema": { "type": "object", "properties": { "total": { "type": "integer" }, "matched": { "type": "integer" }, "labels": { "type": "array", "items": { "type": "string" } } } } } } } }
+        "responses": {
+          "200": {
+            "description": "매칭 목록",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "total": {
+                      "type": "integer"
+                    },
+                    "matched": {
+                      "type": "integer"
+                    },
+                    "labels": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/recognize/video": {
       "post": {
         "operationId": "recognizeSignVideo",
         "summary": "수어 영상 → 글로스 열 + 후보 + 문장",
-        "description": "mp4/webm/mov 파일을 multipart로 보낸다. 이어서 수어한 영상은 mode=segmental(기본), 한 낱말씩 끊어 수어한 영상은 mode=stream. 앞 30초만 본다(max_seconds로 조정).",
+        "description": "mp4/webm/mov 파일을 multipart로 보낸다. 이어서 수어한 영상은 mode=segmental(기본, 투표 디코더), 한 낱말씩 끊어 수어한 영상은 mode=stream. 앞 30초만 본다(max_seconds로 조정). 거울상(전면 카메라 저장본) 영상은 mirror=auto(기본)가 알아서 반전한다.",
         "requestBody": {
           "required": true,
           "content": {
             "multipart/form-data": {
               "schema": {
                 "type": "object",
-                "required": ["file"],
+                "required": [
+                  "file"
+                ],
                 "properties": {
-                  "file": { "type": "string", "format": "binary", "description": "수어 영상 파일" },
-                  "mode": { "type": "string", "enum": ["segmental", "stream"], "default": "segmental" },
-                  "topk": { "type": "integer", "default": 5, "minimum": 1, "maximum": 10 },
-                  "max_seconds": { "type": "number", "default": 0, "description": "0이면 서버 기본(30초)" }
+                  "file": {
+                    "type": "string",
+                    "format": "binary",
+                    "description": "수어 영상 파일"
+                  },
+                  "mode": {
+                    "type": "string",
+                    "enum": [
+                      "segmental",
+                      "dp",
+                      "stream"
+                    ],
+                    "default": "segmental",
+                    "description": "segmental: 이어서 수어(투표 디코더, 기본) · dp: 이어서 수어(세그먼트 DP) · stream: 한 낱말씩 끊어 수어(브라우저 규칙)"
+                  },
+                  "topk": {
+                    "type": "integer",
+                    "default": 5,
+                    "minimum": 1,
+                    "maximum": 10
+                  },
+                  "max_seconds": {
+                    "type": "number",
+                    "default": 0,
+                    "description": "0이면 서버 기본(30초)"
+                  },
+                  "mirror": {
+                    "type": "string",
+                    "enum": [
+                      "auto",
+                      "off",
+                      "on"
+                    ],
+                    "default": "auto",
+                    "description": "auto: 원본/좌우반전 중 모델이 더 잘 알아보는 쪽을 고른다 · on: 강제 반전(왼손잡이·거울 영상) · off: 반전 안 함"
+                  }
                 }
               }
             }
           }
         },
         "responses": {
-          "200": { "description": "인식 결과", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RecognitionResult" } } } },
-          "413": { "description": "파일이 큼(기본 80MB 초과)" },
-          "415": { "description": "지원하지 않는 형식" },
-          "422": { "description": "영상을 디코드하지 못함" }
+          "200": {
+            "description": "인식 결과",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecognitionResult"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "파일이 큼(기본 80MB 초과)"
+          },
+          "415": {
+            "description": "지원하지 않는 형식"
+          },
+          "422": {
+            "description": "영상을 디코드하지 못함"
+          }
         }
       }
     },
@@ -67,29 +170,100 @@
             "application/json": {
               "schema": {
                 "type": "object",
-                "required": ["frames"],
+                "required": [
+                  "frames"
+                ],
                 "properties": {
-                  "fps": { "type": "number", "default": 20 },
-                  "mode": { "type": "string", "enum": ["segmental", "stream"], "default": "segmental" },
-                  "topk": { "type": "integer", "default": 5 },
+                  "fps": {
+                    "type": "number",
+                    "default": 20
+                  },
+                  "mode": {
+                    "type": "string",
+                    "enum": [
+                      "segmental",
+                      "dp",
+                      "stream"
+                    ],
+                    "default": "segmental"
+                  },
+                  "topk": {
+                    "type": "integer",
+                    "default": 5
+                  },
                   "frames": {
                     "type": "array",
                     "items": {
                       "type": "object",
                       "properties": {
-                        "pose": { "type": "array", "description": "33×[x,y,z] 정규화 좌표", "items": { "type": "array", "items": { "type": "number" } } },
-                        "leftHand": { "type": ["array", "null"], "description": "21×[x,y,z] 또는 null", "items": { "type": "array", "items": { "type": "number" } } },
-                        "rightHand": { "type": ["array", "null"], "items": { "type": "array", "items": { "type": "number" } } },
-                        "t": { "type": "integer", "description": "ms" }
+                        "pose": {
+                          "type": "array",
+                          "description": "33×[x,y,z] 정규화 좌표",
+                          "items": {
+                            "type": "array",
+                            "items": {
+                              "type": "number"
+                            }
+                          }
+                        },
+                        "leftHand": {
+                          "type": [
+                            "array",
+                            "null"
+                          ],
+                          "description": "21×[x,y,z] 또는 null",
+                          "items": {
+                            "type": "array",
+                            "items": {
+                              "type": "number"
+                            }
+                          }
+                        },
+                        "rightHand": {
+                          "type": [
+                            "array",
+                            "null"
+                          ],
+                          "items": {
+                            "type": "array",
+                            "items": {
+                              "type": "number"
+                            }
+                          }
+                        },
+                        "t": {
+                          "type": "integer",
+                          "description": "ms"
+                        }
                       }
                     }
+                  },
+                  "mirror": {
+                    "type": "string",
+                    "enum": [
+                      "auto",
+                      "off",
+                      "on"
+                    ],
+                    "default": "auto"
                   }
                 }
               }
             }
           }
         },
-        "responses": { "200": { "description": "인식 결과", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RecognitionResult" } } } } }
+        "responses": {
+          "200": {
+            "description": "인식 결과",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecognitionResult"
+                }
+              }
+            }
+          }
+        }
       }
     }
   },
@@ -98,46 +272,141 @@
       "Health": {
         "type": "object",
         "properties": {
-          "ok": { "type": "boolean" },
-          "model_loaded": { "type": "boolean" },
-          "num_classes": { "type": "integer" },
-          "val_top1_signer_disjoint": { "type": "number" },
-          "landmark_backend": { "type": "string" }
+          "ok": {
+            "type": "boolean"
+          },
+          "model_loaded": {
+            "type": "boolean"
+          },
+          "num_classes": {
+            "type": "integer"
+          },
+          "val_top1_signer_disjoint": {
+            "type": "number"
+          },
+          "landmark_backend": {
+            "type": "string"
+          }
         }
       },
       "Candidate": {
         "type": "object",
         "properties": {
-          "gloss": { "type": "string", "description": "글로스 ID (예: 머리1)" },
-          "label": { "type": "string", "description": "표제어 (예: 머리)" },
-          "confidence": { "type": "number" }
+          "gloss": {
+            "type": "string",
+            "description": "글로스 ID (예: 머리1)"
+          },
+          "label": {
+            "type": "string",
+            "description": "표제어 (예: 머리)"
+          },
+          "confidence": {
+            "type": "number"
+          }
         }
       },
       "Word": {
         "type": "object",
         "properties": {
-          "gloss": { "type": "string" },
-          "label": { "type": "string" },
-          "confidence": { "type": "number", "description": "0~1. 0.5 미만이면 alts를 사용자에게 보여 고르게 할 것" },
-          "start": { "type": "number", "description": "초" },
-          "end": { "type": "number", "description": "초" },
-          "alts": { "type": "array", "items": { "$ref": "#/components/schemas/Candidate" } }
+          "gloss": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "confidence": {
+            "type": "number",
+            "description": "0~1. 0.5 미만이면 alts를 사용자에게 보여 고르게 할 것"
+          },
+          "start": {
+            "type": "number",
+            "description": "초"
+          },
+          "end": {
+            "type": "number",
+            "description": "초"
+          },
+          "alts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Candidate"
+            }
+          }
         }
       },
       "RecognitionResult": {
         "type": "object",
         "properties": {
-          "status": { "type": "string", "enum": ["ok", "no_hands", "no_pose"], "description": "ok가 아니면 words는 빈 배열" },
-          "mode": { "type": "string" },
-          "words": { "type": "array", "items": { "$ref": "#/components/schemas/Word" } },
-          "glosses": { "type": "array", "items": { "type": "string" }, "description": "낱말 ID 열(순서대로)" },
-          "labels": { "type": "array", "items": { "type": "string" }, "description": "표제어 열" },
-          "sentence": { "type": "string", "description": "규칙 기반 폴백 문장. 있는 낱말만 잇는다" },
-          "hand_ratio": { "type": "number" },
-          "frames_valid": { "type": "integer" },
-          "fps": { "type": "number" },
-          "timing_ms": { "type": "object", "additionalProperties": { "type": "number" } },
-          "model": { "type": "object", "additionalProperties": true }
+          "status": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "no_hands",
+              "no_pose"
+            ],
+            "description": "ok가 아니면 words는 빈 배열"
+          },
+          "mode": {
+            "type": "string"
+          },
+          "mirror": {
+            "type": "string",
+            "description": "요청한 mirror 옵션"
+          },
+          "mirrored": {
+            "type": "boolean",
+            "description": "true면 좌우반전한 특징으로 인식했다(거울상 영상으로 판정)"
+          },
+          "mirror_margin": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "auto일 때 반전 점수−원본 점수. 양수가 크면 거울상 확신"
+          },
+          "words": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Word"
+            }
+          },
+          "glosses": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "낱말 ID 열(순서대로)"
+          },
+          "labels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "표제어 열"
+          },
+          "sentence": {
+            "type": "string",
+            "description": "규칙 기반 폴백 문장. 있는 낱말만 잇는다"
+          },
+          "hand_ratio": {
+            "type": "number"
+          },
+          "frames_valid": {
+            "type": "integer"
+          },
+          "fps": {
+            "type": "number"
+          },
+          "timing_ms": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "number"
+            }
+          },
+          "model": {
+            "type": "object",
+            "additionalProperties": true
+          }
         }
       }
     }

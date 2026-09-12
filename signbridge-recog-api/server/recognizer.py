@@ -1,18 +1,22 @@
-"""랜드마크 프레임 열 → 글로스 열 (ONNX 단어 인식기 + 두 가지 디코더).
+"""랜드마크 프레임 열 → 글로스 열 (ONNX 단어 인식기 + 세 가지 디코더).
 
 모델: BioCode67/signbridge `iso-v2` (13,576 클래스, 검증 top-1 0.782, 수어자 분리).
 입력 `[B, 32, 155]` float32 → 출력 로짓 `[B, 13576]`. 속도 특징은 모델 내부에서 만든다.
 
-디코더 둘을 둔다 — 하는 일이 다르다.
-
 | 디코더 | 언제 | 방식 | 실측(AI Hub 17클립, 191낱말) |
 |---|---|---|---|
+| `segmental` (기본) | 이어서 수어한 영상(오프라인) | 다중 스케일 창 → 프레임별 사후확률 투표 → 런 길이 | **F1 0.648**, recall 0.73, precision 0.58 |
+| `dp` | 위와 같음(예전 기본) | 다중 스케일 창 → 세그먼트 DP | F1 0.606 |
 | `stream` | 한 낱말씩 끊어 수어할 때 | 브라우저 `useRecognizer.ts`와 **같은 규칙** | F1 0.584 |
-| `segmental` | 이어서 수어한 영상(오프라인) | 다중 스케일 창 → 세그먼트 DP | **F1 0.606**, recall 0.70 |
 
-두 수치 모두 **연속 수어 클립**에 단어 모델을 댄 값이다. 낱말 하나를 끊어서 하면
+세 수치 모두 **연속 수어 클립**에 단어 모델을 댄 값이다. 낱말 하나를 끊어서 하면
 top-1 0.80·top-5 0.92(같은 클립의 글로스 구간 191개)가 나온다. 연속 수어를 제대로
 읽는 것은 CTC 모델(`ctc-v1`, WER 0.22)의 일이며 이 서버는 그 자리를 비워 두었다.
+
+좌우 반전(거울) 입력: 모델은 손 방향에 강하게 묶여 있다(반전하면 top-1 0.80 → 0.22).
+전면 카메라 저장본이 거울상인 경우가 있어 `mirror="auto"`가 기본이다 — 원본/반전
+양쪽의 창 최대확률 평균을 비교해 여유(MIRROR_MARGIN) 이상 차이 날 때만 반전을 택한다.
+17클립 전부 원본을 골랐고(마진 +0.06~+0.41), 반전본을 넣으면 전부 반전을 골랐다.
 """
 
 from __future__ import annotations
@@ -27,7 +31,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .features import FEATURE_DIM, SEQ_LEN, frame_to_features, resample_sequence
+from .features import FEATURE_DIM, SEQ_LEN, frame_to_features, mirror_features, resample_sequence
 from .korean import gloss_label, glosses_to_korean
 from .landmarks import LandmarkFrame
 
@@ -50,6 +54,20 @@ SEG_FLOOR = 0.5  # 후보 최소 확률
 SEG_AGREE = 2  # 같은 라벨의 겹치는 후보 최소 개수
 SEG_SKIP_COST = 0.08  # 건너뛴 프레임당 비용 σ
 SEG_WORD_PENALTY = 0.0  # 낱말당 벌점 λ
+
+# 추론 배치 상한 — 메모리 아레나 크기를 묶는다(아래 probs 설명).
+PROB_BATCH = 32
+
+# ── vote 디코더(segmental 기본) — 72조합 스윕에서 고른 값(F1 0.648; thr 0.3~0.4·min_len 0.2~0.4·topk 3~5는 0.64±0.01로 평탄, thr 0.5부터 급락) ──
+VOTE_THRESHOLD = 0.4  # 런의 평균 사후확률 하한
+VOTE_MIN_LEN_SEC = 0.3  # 런 최소 길이
+VOTE_TOPK = 3  # 창마다 투표에 넣는 상위 후보 수
+VOTE_WEIGHT_CONF = True  # 창의 top-1 확률로 투표 가중
+
+# ── 거울 자동 판정 ──
+MIRROR_SCALE_SEC = 1.3
+MIRROR_STEP_DIV = 2
+MIRROR_MARGIN = 0.08  # 반전 점수가 원본 점수보다 이만큼 높아야 반전 채택(클립 마진 최소 +0.098, 낱말 하나짜리 입력 손실 ≈0.01)
 
 
 @dataclass
@@ -98,12 +116,20 @@ class Recognizer:
             return self.session.run(None, {self.input_name: x})[0]
 
     def probs(self, segments: list[np.ndarray]) -> np.ndarray:
-        """(T_i, 155) 구간들 → (N, C) 확률."""
-        x = np.stack([resample_sequence(np.ascontiguousarray(s)) for s in segments]).astype(np.float32)
-        lg = self._logits(x)
-        lg = lg - lg.max(axis=1, keepdims=True)
-        p = np.exp(lg)
-        return p / p.sum(axis=1, keepdims=True)
+        """(T_i, 155) 구간들 → (N, C) 확률.
+
+        PROB_BATCH개씩 잘라 돌린다. segmental 디코더는 한 클립에서 창을 수백 개 만드는데,
+        이를 한 배치로 넣으면 onnxruntime 메모리 아레나가 그 크기로 커진 채 남는다
+        (실측 sign_1 686프레임: 한 배치 601MB / 64개 260MB / 32개 185MB, 속도는 32개가 더 빠름).
+        """
+        out = []
+        for i in range(0, len(segments), PROB_BATCH):
+            x = np.stack([resample_sequence(np.ascontiguousarray(s)) for s in segments[i : i + PROB_BATCH]]).astype(np.float32)
+            lg = self._logits(x)
+            lg = lg - lg.max(axis=1, keepdims=True)
+            p = np.exp(lg)
+            out.append(p / p.sum(axis=1, keepdims=True))
+        return np.concatenate(out, axis=0) if out else np.zeros((0, len(self.labels)), np.float32)
 
     def topk(self, p: np.ndarray, k: int) -> list[dict]:
         idx = np.argsort(-p)[:k]
@@ -239,6 +265,75 @@ class Recognizer:
                 merged.append((a, b, i, p))
         return merged
 
+    # ── vote 디코더 (오프라인 · 다중 스케일 창 → 프레임별 사후확률 투표 → 런 길이) ──
+    def _posterior(self, feats: np.ndarray, fps: float) -> np.ndarray:
+        """모든 창의 상위 VOTE_TOPK 확률을 창이 덮는 프레임에 더해 (T, C) 사후확률을 만든다."""
+        T = len(feats)
+        acc = np.zeros((T, len(self.labels)), np.float32)
+        cnt = np.zeros(T, np.float32)
+        for sc in SEG_SCALES_SEC:
+            w = max(4, int(round(fps * sc)))
+            step = max(1, w // SEG_STEP_DIV)
+            starts = [a for a in range(0, max(1, T - w + 1), step) if len(feats[a : a + w]) >= 4]
+            if not starts:
+                continue
+            P = self.probs([feats[a : a + w] for a in starts])
+            for a, p in zip(starts, P):
+                top = np.argpartition(-p, VOTE_TOPK)[:VOTE_TOPK]
+                wgt = float(p[top].max()) if VOTE_WEIGHT_CONF else 1.0
+                acc[a : a + w, top] += wgt * p[top]
+                cnt[a : a + w] += wgt
+        cnt[cnt == 0] = 1.0
+        return acc / cnt[:, None]
+
+    def vote_decode(self, feats: np.ndarray, fps: float, topk: int = 5) -> list[Word]:
+        if len(feats) < 4:
+            return []
+        post = self._posterior(feats, fps)
+        lab = post.argmax(axis=1)
+        conf = post.max(axis=1)
+        min_len = max(2, int(round(fps * VOTE_MIN_LEN_SEC)))
+        runs: list[tuple[int, int, int]] = []  # (a, b, label)
+        t, T = 0, len(feats)
+        while t < T:
+            u = t
+            while u < T and lab[u] == lab[t]:
+                u += 1
+            if u - t >= min_len and float(conf[t:u].mean()) >= VOTE_THRESHOLD:
+                if runs and runs[-1][2] == lab[t]:
+                    runs[-1] = (runs[-1][0], u, lab[t])
+                else:
+                    runs.append((t, u, int(lab[t])))
+            t = u
+        words: list[Word] = []
+        for a, b, i in runs:
+            pm = post[a:b].mean(axis=0)
+            words.append(Word(self.labels[i], gloss_label(self.labels[i]), float(pm[i]), a / fps, b / fps, self.topk(pm, topk)))
+        return words
+
+    # ── 거울 자동 판정 ───────────────────────────────────────────────────
+    def orientation_score(self, feats: np.ndarray, fps: float) -> float:
+        """한 스케일 창들의 최대확률 평균 — 모델이 이 방향을 얼마나 '알아보는가'."""
+        w = max(4, int(round(fps * MIRROR_SCALE_SEC)))
+        step = max(1, w // MIRROR_STEP_DIV)
+        segs = [feats[a : a + w] for a in range(0, max(1, len(feats) - w + 1), step)]
+        segs = [s for s in segs if len(s) >= 4]
+        if not segs:
+            return 0.0
+        return float(self.probs(segs).max(axis=1).mean())
+
+    def resolve_mirror(self, feats: np.ndarray, fps: float, mirror: str) -> tuple[np.ndarray, bool, float | None]:
+        """mirror: 'off' | 'on' | 'auto' → (쓸 특징, 반전 여부, 점수 차(auto일 때))."""
+        if mirror == "on":
+            return mirror_features(feats), True, None
+        if mirror != "auto" or len(feats) < 4:
+            return feats, False, None
+        mirrored = mirror_features(feats)
+        margin = self.orientation_score(mirrored, fps) - self.orientation_score(feats, fps)
+        if margin >= MIRROR_MARGIN:
+            return mirrored, True, margin
+        return feats, False, margin
+
     def segmental_decode(self, feats: np.ndarray, fps: float, topk: int = 5) -> list[Word]:
         if len(feats) < 4:
             return []
@@ -255,22 +350,34 @@ class Recognizer:
         return words
 
     # ── 한 번에 ────────────────────────────────────────────────────────────
-    def recognize(self, frames: list[LandmarkFrame], fps: float, mode: str = "segmental", topk: int = 5) -> dict:
+    def decode(self, feats: np.ndarray, fps: float, mode: str, topk: int) -> list[Word]:
+        if mode == "stream":
+            return self.stream_decode(feats, fps, topk)
+        if mode == "dp":
+            return self.segmental_decode(feats, fps, topk)
+        return self.vote_decode(feats, fps, topk)  # "segmental"
+
+    def recognize(self, frames: list[LandmarkFrame], fps: float, mode: str = "segmental", topk: int = 5, mirror: str = "auto") -> dict:
         t0 = time.perf_counter()
         feats, _stamps, dropped = self.frames_to_features(frames)
         ratio = self.hand_ratio(feats)
         status = "ok"
         words: list[Word] = []
+        mirrored, margin = False, None
         if len(feats) < MIN_FRAMES:
             status = "no_pose"  # 어깨가 잡힌 프레임이 너무 적다 — 상반신이 화면에 없다
         elif ratio < HAND_MIN_RATIO:
             status = "no_hands"  # 손이 안 보이면 답을 내지 않는다(브라우저와 같은 원칙)
         else:
-            words = self.segmental_decode(feats, fps, topk) if mode == "segmental" else self.stream_decode(feats, fps, topk)
+            feats, mirrored, margin = self.resolve_mirror(feats, fps, mirror)
+            words = self.decode(feats, fps, mode, topk)
         glosses = [w.gloss for w in words]
         return {
             "status": status,
             "mode": mode,
+            "mirror": mirror,
+            "mirrored": mirrored,
+            "mirror_margin": None if margin is None else round(margin, 4),
             "words": [w.to_dict() for w in words],
             "glosses": glosses,
             "labels": [w.label for w in words],
