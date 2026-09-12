@@ -115,6 +115,14 @@ AI Hub 재난 수어 클립 17개(191 낱말 구간)로 잰 값입니다.
 
 무료 Space(16 GB)는 넉넉합니다. **512 MB짜리 무료 PaaS(Render 무료 등)에는 맞지 않습니다** — MediaPipe만으로 넘칩니다.
 
+### 알아 둘 것 — mediapipe 0.10.21 파이썬 래퍼의 치명적 버그
+
+`HolisticLandmarker.detect_for_video()`는 얼굴이 잡히고 **손(또는 포즈) 패킷이 비면 프로세스가 통째로 죽습니다**
+(`Check failed: holder_ != nullptr The packet is empty` — 파이썬 예외가 아니라 abort). 수어 영상은 한 손만 보이는 프레임이 흔해서
+이 경로로는 첫 실제 영상에서 서버가 죽습니다(실제 사람 사진으로 재현, `tests/test_e2e.py` [6]). 얼굴이 안 잡히면 포즈·손까지 빈 결과를
+돌려주는 문제도 있습니다. 그래서 `server/landmarks.py`는 래퍼를 거치지 않고 그래프를 직접 돌린 뒤 스트림마다 `is_empty()`를 확인합니다.
+**mediapipe 버전을 올리거나 바꾸면 이 테스트를 꼭 다시 돌리세요.**
+
 ## 배포 (Hugging Face Spaces, 무료 CPU)
 
 1. **+ New Space** → SDK **Docker** → Hardware **CPU basic (free)** → Public

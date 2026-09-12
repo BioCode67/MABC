@@ -11,6 +11,7 @@
      - 거울 자동 판정: 원본 17클립은 원본으로, 반전본은 반전으로
   4. /recognize/landmarks 입력 형식 왕복(JSON 프레임 → 인식)
   5. 손 없음/포즈 없음 가드
+  6. 실제 사람 사진으로 만든 영상 → MediaPipe 검출(래퍼 빈 패킷 크래시 회귀) → 인식
 """
 
 from __future__ import annotations
@@ -175,6 +176,44 @@ check(r["status"] == "no_hands" and r["words"] == [], "손 없음 → no_hands")
 few = [LandmarkFrame(pose=pose, left=np.random.rand(21, 3).astype(np.float32), right=None, t_ms=i * 33) for i in range(MIN_FRAMES - 1)]
 r = rec.recognize(few, 30.0)
 check(r["status"] == "no_pose", "프레임 부족 → no_pose")
+
+print("[6] MediaPipe 실사진 경로 (0.10.21 래퍼 빈 패킷 크래시 회귀)")
+img_path = ROOT / "tests" / "data" / "basketball1.png"
+if not img_path.exists():
+    print("  - 건너뜀: 사진 없음", img_path)
+else:
+    import tempfile
+
+    import cv2
+
+    from server.landmarks import extract_video
+
+    img = cv2.imread(str(img_path))
+    H, W = img.shape[:2]
+    with tempfile.TemporaryDirectory() as td:
+        out = Path(td) / "real.mp4"
+        vw = cv2.VideoWriter(str(out), cv2.VideoWriter_fourcc(*"mp4v"), 25.0, (640, 480))
+        for i in range(50):  # 2초, 천천히 줌·팬 — 정지 사진이라도 VIDEO 모드 추적을 태운다
+            z = 1.0 + 0.15 * i / 50
+            cx, cy = W / 2 + 40 * np.sin(i / 12), H / 2
+            M = cv2.getRotationMatrix2D((cx, cy), 0, z)
+            M[:, 2] += (320 - cx, 240 - cy)
+            vw.write(cv2.warpAffine(img, M, (640, 480)))
+        vw.release()
+        t = time.perf_counter()
+        vl = extract_video(out)
+        dt = time.perf_counter() - t
+        vl2 = extract_video(out)  # 두 번째 요청: 재사용 인스턴스 + 타임스탬프 오프셋 경로
+    pose = sum(f.pose is not None for f in vl.frames)
+    hands = sum((f.left is not None) or (f.right is not None) for f in vl.frames)
+    missing = sum((f.left is None) or (f.right is None) for f in vl.frames)
+    check(vl.backend == "mediapipe-tasks", f"백엔드 {vl.backend}")
+    check(pose >= 40, f"포즈 검출 {pose}/{len(vl.frames)} 프레임 ({dt:.1f}s)")
+    check(hands >= 20, f"손 검출 {hands} 프레임")
+    check(missing >= 1, f"한쪽 손이 빈 프레임 {missing}개 — 빈 패킷 경로를 지나고도 살아 있음")
+    r = rec.recognize(vl.frames, vl.fps)
+    check(r["status"] in ("ok", "no_hands"), f"recognize status={r['status']} hand_ratio={r['hand_ratio']}")
+    check(len(vl2.frames) == len(vl.frames) and sum(f.pose is not None for f in vl2.frames) >= 40, "두 번째 요청도 정상(랜드마커 재사용)")
 
 print()
 if FAILS:

@@ -64,16 +64,31 @@ class _TasksHolistic:
     메모리가 돌아오지 않는다(실측 60프레임 요청 12회: 340→866MB, 계속 증가 / 재사용: 359MB 고정,
     속도도 25% 빠름). VIDEO 모드는 타임스탬프가 단조 증가해야 하므로 요청마다 오프셋을 더하고,
     요청 사이에 검은 프레임 하나를 넣어 추적 상태(이전 영상의 관심영역)를 끊는다.
+
+    `detect_for_video`는 쓰지 않는다. mediapipe 0.10.21 파이썬 래퍼는
+      - 얼굴이 안 잡히면 포즈·손까지 전부 빈 결과로 돌려주고,
+      - 얼굴은 잡혔는데 손(또는 포즈) 패킷이 비면 빈 패킷에서 proto를 꺼내다
+        **프로세스가 통째로 죽는다** (`Check failed: holder_ != nullptr The packet is empty`).
+    수어 영상은 한 손만 보이는 프레임이 흔하므로 이 경로로는 첫 실제 영상에서 서버가 죽는다
+    (실사진으로 재현). 그래서 그래프를 직접 돌리고 스트림마다 `is_empty()`를 확인해 꺼낸다.
     """
 
     name = "mediapipe-tasks"
 
     def __init__(self, task_path: Path):
         import mediapipe as mp
+        from mediapipe.framework.formats import landmark_pb2
+        from mediapipe.python import packet_creator, packet_getter
         from mediapipe.tasks import python as mpp
         from mediapipe.tasks.python import vision
+        from mediapipe.tasks.python.vision import holistic_landmarker as hl
 
         self._mp = mp
+        self._hl = hl
+        self._packet_creator = packet_creator
+        self._packet_getter = packet_getter
+        self._landmark_pb2 = landmark_pb2
+        self._us_per_ms = getattr(hl, "_MICRO_SECONDS_PER_MILLISECOND", 1000)
         opts = vision.HolisticLandmarkerOptions(
             base_options=mpp.BaseOptions(model_asset_path=str(task_path)),
             running_mode=vision.RunningMode.VIDEO,
@@ -84,9 +99,26 @@ class _TasksHolistic:
         self._next_ts = 0
         self._blank = np.zeros((64, 64, 3), dtype=np.uint8)
 
-    def _detect(self, rgb: np.ndarray, ts: int):
+    def _stream(self, packets, name: str, n: int) -> np.ndarray | None:
+        pk = packets.get(name)
+        if pk is None or pk.is_empty():
+            return None
+        lst = self._landmark_pb2.NormalizedLandmarkList()
+        lst.MergeFrom(self._packet_getter.get_proto(pk))
+        if len(lst.landmark) != n:
+            return None
+        return np.array([[lm.x, lm.y, lm.z] for lm in lst.landmark], dtype=np.float32)
+
+    def _detect(self, rgb: np.ndarray, ts: int) -> tuple[np.ndarray | None, np.ndarray | None, np.ndarray | None]:
         img = self._mp.Image(image_format=self._mp.ImageFormat.SRGB, data=rgb)
-        return self._lm.detect_for_video(img, int(ts))
+        packets = self._lm._process_video_data(
+            {self._hl._IMAGE_IN_STREAM_NAME: self._packet_creator.create_image(img).at(int(ts) * self._us_per_ms)}
+        )
+        return (
+            self._stream(packets, self._hl._POSE_LANDMARKS_STREAM_NAME, NUM_POSE),
+            self._stream(packets, self._hl._LEFT_HAND_LANDMARKS_STREAM_NAME, NUM_HAND),
+            self._stream(packets, self._hl._RIGHT_HAND_LANDMARKS_STREAM_NAME, NUM_HAND),
+        )
 
     def run_video(self, frames_rgb, timestamps_ms) -> list[LandmarkFrame]:
         out: list[LandmarkFrame] = []
@@ -99,15 +131,8 @@ class _TasksHolistic:
                 last = 0
                 for rgb, ts in zip(frames_rgb, timestamps_ms):
                     last = max(last, int(ts))
-                    r = self._detect(rgb, base + int(ts))
-                    out.append(
-                        LandmarkFrame(
-                            pose=_to_array(r.pose_landmarks, NUM_POSE),
-                            left=_to_array(r.left_hand_landmarks, NUM_HAND),
-                            right=_to_array(r.right_hand_landmarks, NUM_HAND),
-                            t_ms=int(ts),
-                        )
-                    )
+                    pose, left, right = self._detect(rgb, base + int(ts))
+                    out.append(LandmarkFrame(pose=pose, left=left, right=right, t_ms=int(ts)))
                 self._next_ts = base + last + 40
             except Exception:
                 # 랜드마커가 깨진 채 남지 않게 새로 만든다(타임스탬프도 0부터).
