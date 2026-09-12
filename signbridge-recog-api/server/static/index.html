@@ -58,7 +58,7 @@
     <h2>2. 결과</h2>
     <div id="msg"></div>
     <div id="words" style="margin-top:8px"></div>
-    <div class="sentence" id="sentence"></div>
+    <div class="row"><div class="sentence" id="sentence"></div><button id="speak" type="button" hidden>🔊 읽어주기</button></div>
     <p class="hint">확신이 낮은 낱말(노란 칸)은 후보에서 골라 고칠 수 있습니다. 고치면 문장과 아래 텍스트가 다시 만들어집니다.</p>
     <div class="stat" id="stat"></div>
     <h2 style="margin-top:14px">3. 에이전트에 붙여넣을 텍스트</h2>
@@ -154,6 +154,8 @@
       catch { sentence = ""; }
     }
     $("sentence").textContent = sentence ? "문장 초안: " + sentence : "";
+    $("speak").hidden = !(sentence && "speechSynthesis" in window);
+    $("speak").dataset.text = sentence || "";
     const labels = last.words.map((w, i) => { const g = chosen[i]; const a = [w, ...w.alts].find(x => x.gloss === g); return a ? a.label : g; });
     const low = last.words.filter((w, i) => chosen[i] === w.gloss && w.confidence < 0.5).map(w => `${w.label}(${Math.round(w.confidence * 100)}%) → 후보: ${w.alts.slice(1, 4).map(a => a.label).join(", ")}`);
     const lines = ["[수어 인식 결과]", `낱말: ${labels.join(" / ") || "(없음)"}`, `문장 초안: ${sentence || "(없음)"}`];
@@ -162,6 +164,15 @@
     if (last.status !== "ok") lines.push(`상태: ${last.status} (인식 결과 없음)`);
     $("paste").value = lines.join("\n");
   }
+
+  // 청인에게 들려주기 — 브라우저 내장 음성 합성(서버·외부 API 없음). 폰·PC 대부분 한국어 음성이 있다.
+  $("speak").addEventListener("click", () => {
+    const text = $("speak").dataset.text; if (!text) return;
+    const u = new SpeechSynthesisUtterance(text); u.lang = "ko-KR"; u.rate = 0.95;
+    const ko = speechSynthesis.getVoices().find(v => v.lang && v.lang.toLowerCase().startsWith("ko"));
+    if (ko) u.voice = ko;
+    speechSynthesis.cancel(); speechSynthesis.speak(u);
+  });
 
   $("copy").addEventListener("click", async () => {
     const t = $("paste").value;
