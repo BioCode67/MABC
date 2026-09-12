@@ -1,0 +1,6 @@
+assets/model.onnx
+assets/meta.json
+assets/holistic_landmarker.task
+__pycache__/
+*.pyc
+.venv/
