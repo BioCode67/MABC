@@ -1,0 +1,12 @@
+# SignBridge 수어 인식 API — 배포·로컬 공용.
+#
+# 검증 환경: Python 3.11 · 이 조합으로 ONNX 로드·MediaPipe Tasks(.task) 로드·mp4 디코드 전부 확인.
+# mediapipe 1.x는 API가 바뀌었을 수 있어 브라우저(@mediapipe/tasks-vision 0.10.x)와 같은 0.10 계열로 고정.
+# numpy 2는 mediapipe 0.10.21과 충돌 → <2.
+numpy<2
+onnxruntime==1.20.1
+mediapipe==0.10.21
+opencv-python-headless<4.11
+fastapi
+uvicorn[standard]
+python-multipart
