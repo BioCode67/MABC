@@ -1,0 +1,27 @@
+# 수어 인식 API(HF Space)를 20분마다 깨워 둔다 — 무료 Space는 48시간 요청이 없으면 잠들고,
+# 심사 시점 실행 오류는 실격이다. 저장소 Settings → Secrets and variables → Actions → Variables에
+# SIGNBRIDGE_API_URL = https://<space>.hf.space 를 넣으면 동작한다(없으면 조용히 건너뜀).
+# 예약 실행은 기본 브랜치에서만 돈다.
+name: keep-alive
+
+on:
+  schedule:
+    - cron: "*/20 * * * *"
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: GET /health
+        env:
+          URL: ${{ vars.SIGNBRIDGE_API_URL }}
+        run: |
+          if [ -z "$URL" ]; then echo "SIGNBRIDGE_API_URL 변수가 없어 건너뜀"; exit 0; fi
+          URL="${URL%/}"
+          echo "ping $URL/health"
+          # 잠든 Space는 첫 응답까지 1분 가까이 걸릴 수 있어 재시도한다.
+          curl -sS -m 120 --retry 4 --retry-delay 20 --retry-all-errors "$URL/health" -o health.json -w "http %{http_code} in %{time_total}s\n"
+          cat health.json; echo
+          grep -Eq '"ok": *true' health.json || { echo "::error::health ok=false"; exit 1; }

@@ -19,10 +19,14 @@ from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
+from .korean import gloss_label, glosses_to_korean
 from .landmarks import MAX_SECONDS_DEFAULT, TASK_PATH, extract_video, frames_from_json, get_backend
 from .recognizer import META_PATH, MODEL_PATH, get_recognizer
+
+STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 MAX_UPLOAD_MB = float(os.environ.get("MAX_UPLOAD_MB", "80"))
 ALLOWED_SUFFIX = {".mp4", ".webm", ".mov", ".avi", ".mkv", ".m4v"}
@@ -165,9 +169,29 @@ def recognize_landmarks(req: LandmarksRequest):
     return get_recognizer().recognize(frames, req.fps, mode=mode, topk=max(1, min(req.topk, 10)), mirror=mirror)
 
 
-@app.get("/")
+class SentenceRequest(BaseModel):
+    glosses: list[str] = Field(..., description="글로스 ID 열 (예: ['머리1','어제1','아프다1'])")
+
+
+@app.post("/sentence")
+def sentence(req: SentenceRequest):
+    """글로스 열 → 규칙 기반 문장. 사용자가 후보로 낱말을 고친 뒤 문장을 다시 만들 때 쓴다."""
+    glosses = [g for g in req.glosses if isinstance(g, str) and g.strip()][:200]
+    return {"glosses": glosses, "labels": [gloss_label(g) for g in glosses], "sentence": glosses_to_korean(glosses) if glosses else ""}
+
+
+@app.get("/", response_class=HTMLResponse)
 def root():
+    """폰·PC에서 바로 찍어 올려 보는 테스트 페이지. 에이전트가 파일을 못 넘길 때의 우회 경로이기도 하다."""
+    page = STATIC_DIR / "index.html"
+    if page.exists():
+        return HTMLResponse(page.read_text(encoding="utf-8"))
+    return HTMLResponse("<p>SignBridge Sign Recognition API — see /docs</p>")
+
+
+@app.get("/info")
+def info():
     return {
         "service": "SignBridge Sign Recognition API",
-        "endpoints": ["/health", "/labels", "/recognize/video", "/recognize/landmarks", "/docs", "/openapi.json"],
+        "endpoints": ["/", "/health", "/labels", "/sentence", "/recognize/video", "/recognize/landmarks", "/docs", "/openapi.json"],
     }

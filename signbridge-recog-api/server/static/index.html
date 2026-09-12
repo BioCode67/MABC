@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SignBridge 수어 인식</title>
+<link rel="icon" href="data:,">
+<style>
+  :root { --bg:#f6f7fb; --card:#fff; --ink:#1b1f2a; --mute:#6b7280; --line:#e5e7eb; --accent:#4f46e5; --ok:#15803d; --warn:#b45309; --bad:#b91c1c; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Malgun Gothic","Noto Sans KR",sans-serif; background:var(--bg); color:var(--ink); }
+  header { padding:14px 16px; background:#fff; border-bottom:1px solid var(--line); display:flex; justify-content:space-between; align-items:center; gap:8px; }
+  header h1 { font-size:17px; margin:0; }
+  #health { font-size:12px; color:var(--mute); }
+  #health.ok { color:var(--ok); } #health.bad { color:var(--bad); }
+  main { max-width:640px; margin:0 auto; padding:16px; display:grid; gap:14px; }
+  section { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px; }
+  h2 { font-size:14px; margin:0 0 10px; color:var(--mute); font-weight:600; }
+  .row { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+  .btn, button { font:inherit; border:1px solid var(--line); background:#fff; color:var(--ink); border-radius:10px; padding:10px 14px; cursor:pointer; }
+  button.primary { background:var(--accent); color:#fff; border-color:var(--accent); width:100%; padding:12px; font-weight:600; }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  select { font:inherit; padding:8px; border:1px solid var(--line); border-radius:8px; background:#fff; }
+  video { width:100%; max-height:320px; background:#000; border-radius:10px; margin-top:10px; }
+  #status { font-size:13px; color:var(--mute); margin-top:8px; min-height:18px; }
+  #msg { padding:10px 12px; border-radius:10px; font-size:14px; }
+  #msg.ok { background:#ecfdf5; color:var(--ok); } #msg.warn { background:#fffbeb; color:var(--warn); } #msg.bad { background:#fef2f2; color:var(--bad); }
+  .word { display:inline-flex; flex-direction:column; gap:4px; margin:4px 6px 4px 0; padding:8px 10px; border:1px solid var(--line); border-radius:10px; background:#fafafa; min-width:96px; }
+  .word .t { font-size:11px; color:var(--mute); }
+  .word.low { border-color:#f59e0b; background:#fffbeb; }
+  .sentence { font-size:18px; font-weight:600; margin:10px 0 4px; }
+  textarea { width:100%; min-height:120px; font:13px/1.5 ui-monospace,Menlo,monospace; border:1px solid var(--line); border-radius:10px; padding:10px; resize:vertical; }
+  pre { white-space:pre-wrap; word-break:break-all; font-size:11px; color:var(--mute); max-height:260px; overflow:auto; }
+  .hint { font-size:12px; color:var(--mute); margin:6px 0 0; line-height:1.5; }
+  .stat { font-size:12px; color:var(--mute); margin-top:6px; }
+</style>
+</head>
+<body>
+<header><h1>🤟 SignBridge 수어 인식</h1><span id="health">서버 확인 중…</span></header>
+<main>
+  <section>
+    <h2>1. 수어 영상</h2>
+    <div class="row">
+      <label class="btn">📷 촬영·영상 선택<input type="file" id="file" accept="video/*" capture="user" hidden></label>
+      <button id="rec" type="button">⏺ 브라우저에서 녹화 (최대 8초)</button>
+    </div>
+    <video id="preview" playsinline muted controls hidden></video>
+    <p class="hint">정면에서 손과 상반신이 다 보이게, 3~8초. 낱말 사이를 잠깐 멈추면 더 잘 읽습니다.</p>
+    <div class="row" style="margin-top:10px">
+      <label>모드 <select id="mode"><option value="segmental">이어서 수어 (기본)</option><option value="stream">한 낱말씩 끊어서</option><option value="dp">DP (비교용)</option></select></label>
+      <label>거울 <select id="mirror"><option value="auto">자동</option><option value="off">끔</option><option value="on">켬</option></select></label>
+    </div>
+    <div style="margin-top:12px"><button id="go" class="primary" type="button" disabled>인식하기</button></div>
+    <div id="status"></div>
+  </section>
+
+  <section id="result" hidden>
+    <h2>2. 결과</h2>
+    <div id="msg"></div>
+    <div id="words" style="margin-top:8px"></div>
+    <div class="sentence" id="sentence"></div>
+    <p class="hint">확신이 낮은 낱말(노란 칸)은 후보에서 골라 고칠 수 있습니다. 고치면 문장과 아래 텍스트가 다시 만들어집니다.</p>
+    <div class="stat" id="stat"></div>
+    <h2 style="margin-top:14px">3. 에이전트에 붙여넣을 텍스트</h2>
+    <textarea id="paste" readonly></textarea>
+    <div class="row" style="margin-top:8px"><button id="copy" type="button">📋 복사</button><span id="copied" class="hint"></span></div>
+    <details style="margin-top:10px"><summary class="hint">원본 응답 (JSON)</summary><pre id="raw"></pre></details>
+  </section>
+</main>
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  let blob = null, filename = "clip.mp4", recorder = null, stream = null, timer = null, last = null, chosen = [];
+
+  fetch("/health").then(r => r.json()).then(h => {
+    $("health").textContent = h.ok ? `모델 준비됨 · ${h.num_classes.toLocaleString()} 낱말` : "모델 미적재";
+    $("health").className = h.ok ? "ok" : "bad";
+  }).catch(() => { $("health").textContent = "서버 응답 없음"; $("health").className = "bad"; });
+
+  function setClip(b, name) {
+    blob = b; filename = name;
+    const v = $("preview"); v.src = URL.createObjectURL(b); v.hidden = false;
+    $("go").disabled = false; $("status").textContent = `${name} · ${(b.size / 1048576).toFixed(1)} MB`;
+  }
+  $("file").addEventListener("change", (e) => { const f = e.target.files[0]; if (f) setClip(f, f.name || "clip.mp4"); });
+
+  $("rec").addEventListener("click", async () => {
+    if (recorder && recorder.state === "recording") { recorder.stop(); return; }
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user", width: { ideal: 640 } }, audio: false });
+    } catch (err) { $("status").textContent = "카메라를 열 수 없습니다: " + err.message; return; }
+    const v = $("preview"); v.hidden = false; v.srcObject = stream; v.controls = false; v.play();
+    const mime = ["video/webm;codecs=vp8", "video/webm", "video/mp4"].find(m => MediaRecorder.isTypeSupported(m)) || "";
+    const chunks = [];
+    recorder = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+    recorder.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
+    recorder.onstop = () => {
+      clearTimeout(timer); stream.getTracks().forEach(t => t.stop()); v.srcObject = null; v.controls = true;
+      const type = recorder.mimeType || mime || "video/webm";
+      setClip(new Blob(chunks, { type }), type.includes("mp4") ? "record.mp4" : "record.webm");
+      $("rec").textContent = "⏺ 브라우저에서 녹화 (최대 8초)";
+    };
+    recorder.start(250); $("rec").textContent = "⏹ 녹화 중지"; $("status").textContent = "녹화 중… 8초 후 자동 종료";
+    timer = setTimeout(() => { if (recorder.state === "recording") recorder.stop(); }, 8000);
+  });
+
+  $("go").addEventListener("click", async () => {
+    if (!blob) return;
+    $("go").disabled = true; $("status").textContent = "인식 중… (영상 길이에 따라 수십 초)";
+    const fd = new FormData();
+    fd.append("file", blob, filename); fd.append("mode", $("mode").value); fd.append("mirror", $("mirror").value); fd.append("topk", "5");
+    const t0 = performance.now();
+    try {
+      const r = await fetch("/recognize/video", { method: "POST", body: fd });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.detail || r.statusText);
+      render(j, performance.now() - t0);
+    } catch (err) {
+      $("result").hidden = false; $("msg").className = "bad"; $("msg").textContent = "실패: " + err.message;
+      $("words").innerHTML = ""; $("sentence").textContent = ""; $("paste").value = "";
+    } finally { $("go").disabled = false; $("status").textContent = ""; }
+  });
+
+  function render(j, ms) {
+    last = j; $("result").hidden = false; $("raw").textContent = JSON.stringify(j, null, 2);
+    const m = $("msg");
+    if (j.status === "ok" && j.words.length) { m.className = "ok"; m.textContent = `낱말 ${j.words.length}개를 읽었습니다.` + (j.mirrored ? " (거울상 영상으로 판단해 반전해서 읽음)" : ""); }
+    else if (j.status === "no_hands") { m.className = "warn"; m.textContent = "손이 잘 안 보입니다. 손이 화면 안에 들어오게 다시 찍어 주세요."; }
+    else if (j.status === "no_pose") { m.className = "warn"; m.textContent = "상반신이 잡히지 않았습니다. 카메라를 조금 멀리 두고 정면에서 다시 찍어 주세요."; }
+    else { m.className = "warn"; m.textContent = "읽어낸 낱말이 없습니다. 낱말 사이를 잠깐 멈추며 다시 해 보거나 '한 낱말씩' 모드로 시도해 보세요."; }
+    chosen = j.words.map(w => w.gloss);
+    const box = $("words"); box.innerHTML = "";
+    j.words.forEach((w, i) => {
+      const d = document.createElement("div"); d.className = "word" + (w.confidence < 0.5 ? " low" : "");
+      const sel = document.createElement("select");
+      const seen = new Set();
+      [{ gloss: w.gloss, label: w.label, confidence: w.confidence }, ...w.alts].forEach(a => {
+        if (seen.has(a.gloss)) return; seen.add(a.gloss);
+        const o = document.createElement("option"); o.value = a.gloss; o.textContent = `${a.label} (${Math.round(a.confidence * 100)}%)`; sel.appendChild(o);
+      });
+      sel.value = w.gloss;
+      sel.addEventListener("change", () => { chosen[i] = sel.value; refresh(); });
+      const t = document.createElement("span"); t.className = "t"; t.textContent = `${w.start.toFixed(1)}~${w.end.toFixed(1)}s · 확신 ${Math.round(w.confidence * 100)}%`;
+      d.appendChild(sel); d.appendChild(t); box.appendChild(d);
+    });
+    const tm = j.timing_ms || {};
+    $("stat").textContent = `서버 ${Math.round(tm.total || tm.recognize || 0)} ms (랜드마크 ${Math.round(tm.landmarks || 0)} · 인식 ${Math.round(tm.recognize || 0)}) · 왕복 ${Math.round(ms)} ms · 손 보인 비율 ${Math.round((j.hand_ratio || 0) * 100)}% · 모드 ${j.mode}`;
+    refresh(j.sentence);
+  }
+
+  async function refresh(sentence) {
+    if (sentence === undefined) {
+      try { const r = await fetch("/sentence", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ glosses: chosen }) }); sentence = (await r.json()).sentence; }
+      catch { sentence = ""; }
+    }
+    $("sentence").textContent = sentence ? "문장 초안: " + sentence : "";
+    const labels = last.words.map((w, i) => { const g = chosen[i]; const a = [w, ...w.alts].find(x => x.gloss === g); return a ? a.label : g; });
+    const low = last.words.filter((w, i) => chosen[i] === w.gloss && w.confidence < 0.5).map(w => `${w.label}(${Math.round(w.confidence * 100)}%) → 후보: ${w.alts.slice(1, 4).map(a => a.label).join(", ")}`);
+    const lines = ["[수어 인식 결과]", `낱말: ${labels.join(" / ") || "(없음)"}`, `문장 초안: ${sentence || "(없음)"}`];
+    if (low.length) lines.push("확신 낮은 낱말: " + low.join(" · "));
+    if (last.mirrored) lines.push("참고: 거울상 영상으로 판단해 반전해서 읽음");
+    if (last.status !== "ok") lines.push(`상태: ${last.status} (인식 결과 없음)`);
+    $("paste").value = lines.join("\n");
+  }
+
+  $("copy").addEventListener("click", async () => {
+    const t = $("paste").value;
+    try { await navigator.clipboard.writeText(t); } catch { $("paste").select(); document.execCommand("copy"); }
+    $("copied").textContent = "복사됨"; setTimeout(() => { $("copied").textContent = ""; }, 1500);
+  });
+})();
+</script>
+</body>
+</html>

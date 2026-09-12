@@ -28,11 +28,27 @@ short_description: 한국수어 영상 → 글로스 열 → 한국어 문장 (i
 
 | 경로 | 하는 일 |
 |---|---|
+| `GET /` | **테스트 페이지** — 폰·PC에서 바로 촬영/업로드 → 결과 확인 → 후보로 낱말 수정 → 에이전트에 붙여넣을 텍스트 복사 |
 | `GET /health` | 모델·검출기 적재 상태 (`ok: true`면 준비됨) |
 | `GET /labels?q=병원&limit=20` | 인식 가능한 글로스 검색 |
 | `POST /recognize/video` | 영상(mp4·webm·mov) → 글로스 열 · 후보 · 문장 |
 | `POST /recognize/landmarks` | 브라우저가 뽑은 랜드마크 JSON → 같은 결과 |
-| `GET /docs` · `/openapi.json` | 자동 문서 / OpenAPI 스펙 |
+| `POST /sentence` | 글로스 열 → 규칙 기반 문장 (후보로 고친 뒤 다시 만들 때) |
+| `GET /docs` · `/openapi.json` · `/info` | 자동 문서 / OpenAPI 스펙 / 엔드포인트 목록 |
+
+### 테스트 페이지 (`/`)
+
+Space 주소를 폰에서 열면 바로 씁니다. **📷 촬영·영상 선택**은 폰 카메라 앱으로 찍어 올리고(가장 확실), **브라우저에서 녹화**는
+`MediaRecorder`로 8초까지 찍습니다(webm 또는 mp4). 결과의 노란 낱말은 확신이 0.5 미만이라 후보에서 골라 고칠 수 있고,
+고치면 `/sentence`로 문장을 다시 만듭니다. 맨 아래 텍스트는 그대로 복사해 에이전트 대화창에 붙이는 용도입니다 —
+**에이전트가 영상 파일을 API로 못 넘기는 경우의 우회 경로**이자 심사위원이 즉시 써 볼 수 있는 화면입니다.
+
+```
+[수어 인식 결과]
+낱말: 머리 / 어제 / 아프다
+문장 초안: 머리 어제 아파요
+확신 낮은 낱말: 어제(42%) → 후보: 오늘, 내일, 그제
+```
 
 ### 영상 인식
 
@@ -135,7 +151,9 @@ AI Hub 재난 수어 클립 17개(191 낱말 구간)로 잰 값입니다.
 ### 절전 대비 (심사 실격 방지)
 
 무료 Space는 **48시간 미사용 시 잠들고 깨는 데 30초~1분** 걸립니다. 심사 시점 실행 오류는 실격입니다.
-- 제출 후 심사 기간 동안 `GET /health`를 **주기적으로 호출**해 깨워 둡니다 (예: cron-job.org 등 무료 핑 서비스, 20분 간격)
+- 이 저장소의 GitHub Actions `.github/workflows/keepalive.yml`이 **20분마다 `/health`를 호출**합니다.
+  저장소 Settings → Secrets and variables → Actions → **Variables**에 `SIGNBRIDGE_API_URL = https://<space>.hf.space`를
+  넣으면 켜집니다(없으면 조용히 건너뜀). Actions 탭에서 `keep-alive`를 수동 실행(Run workflow)해 초록불을 확인하세요.
 - 발표 직전에도 한 번 열어 둡니다
 - 확실히 하려면 **Persistent hardware(유료, 시간당 과금)** 로 올리면 잠들지 않습니다
 

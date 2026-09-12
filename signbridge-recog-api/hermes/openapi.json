@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "SignBridge Sign Recognition API",
-    "version": "1.1.0",
+    "version": "1.2.0",
     "description": "한국수어 영상 또는 MediaPipe 랜드마크를 받아 글로스 열(낱말 ID), 낱말별 후보(top-k), 규칙 기반 폴백 문장을 돌려준다. LLM 없음. status가 'ok'가 아니면 인식 결과가 없는 것이며, 그때는 사용자에게 손과 상반신이 보이게 다시 촬영하도록 안내해야 한다. 최종 문장은 glosses·alts를 근거로 작성하되 없는 낱말을 지어내지 않는다."
   },
   "servers": [
@@ -259,6 +259,64 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/RecognitionResult"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/sentence": {
+      "post": {
+        "operationId": "glossesToSentence",
+        "summary": "글로스 열 → 규칙 기반 한국어 문장",
+        "description": "사용자가 후보(alts)로 낱말을 고친 뒤, 고쳐진 글로스 열로 폴백 문장을 다시 만든다. LLM 없음.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "glosses"
+                ],
+                "properties": {
+                  "glosses": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "글로스 ID 열(예: 머리1, 어제1, 아프다1)"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "문장",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "glosses": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "labels": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "sentence": {
+                      "type": "string"
+                    }
+                  }
                 }
               }
             }
